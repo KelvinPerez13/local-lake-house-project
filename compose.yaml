@@ -1,0 +1,131 @@
+name: ${COMPOSE_PROJECT_NAME:-lakehouse_lab}
+x-lab-env: &lab-env
+  PGHOST: postgres
+  PGDATABASE: ${POSTGRES_DB:-source}
+  PGUSER: ${POSTGRES_USER:-lab}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?Copie .env.example para .env}
+  S3_ENDPOINT: http://minio:9000
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+  AWS_REGION: us-east-1
+  AWS_DEFAULT_REGION: us-east-1
+  S3_BUCKET: warehouse
+  CATALOG_URI: http://catalog:8181
+  PYTHONPATH: /app
+services:
+  postgres:
+    image: postgres:16.6-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:-source}
+    ports: ["127.0.0.1:5433:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  minio:
+    build:
+      context: .
+      dockerfile: docker/minio.Dockerfile
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    volumes: [minio-data:/data]
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:9000/minio/health/live]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  storage-init:
+    build:
+      context: .
+      dockerfile: docker/ingestion.Dockerfile
+    environment: *lab-env
+    command: python -m pipelines.init_storage
+    depends_on:
+      minio: {condition: service_healthy}
+  catalog:
+    build:
+      context: .
+      dockerfile: docker/catalog.Dockerfile
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      AWS_REGION: us-east-1
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:sqlite:/catalog/catalog.db
+      CATALOG_WAREHOUSE: s3://warehouse/iceberg
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+    volumes: [catalog-data:/catalog]
+    ports: ["127.0.0.1:8181:8181"]
+    depends_on:
+      storage-init: {condition: service_completed_successfully}
+  ingestion:
+    profiles: [jobs]
+    build:
+      context: .
+      dockerfile: docker/ingestion.Dockerfile
+    environment: *lab-env
+    command: python -m pipelines.ingest
+    depends_on:
+      postgres: {condition: service_healthy}
+      storage-init: {condition: service_completed_successfully}
+  spark:
+    profiles: [jobs]
+    build:
+      context: .
+      dockerfile: docker/spark.Dockerfile
+    environment: *lab-env
+    command: python -m pipelines.transform
+    depends_on: [catalog]
+  jupyter:
+    build:
+      context: .
+      dockerfile: docker/spark.Dockerfile
+    environment:
+      <<: *lab-env
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:?}
+    command: [jupyter, lab, --ip=0.0.0.0, --port=8888, --no-browser, --allow-root, --ServerApp.root_dir=/app/notebooks]
+    ports: ["127.0.0.1:8888:8888"]
+    volumes: ["./notebooks:/app/notebooks"]
+    depends_on: [catalog]
+  trino:
+    profiles: [trino]
+    image: trinodb/trino:471
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+    ports: ["127.0.0.1:8081:8080"]
+    volumes: ["./trino/iceberg.properties:/etc/trino/catalog/iceberg.properties:ro"]
+    depends_on: [catalog]
+  airflow:
+    profiles: [airflow]
+    build:
+      context: .
+      dockerfile: docker/airflow.Dockerfile
+    environment:
+      <<: *lab-env
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /app/dags
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/state/airflow.db
+    command: standalone
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: [airflow-data:/opt/airflow]
+    depends_on:
+      postgres: {condition: service_healthy}
+      catalog: {condition: service_started}
+volumes:
+  postgres-data:
+  minio-data:
+  catalog-data:
+  airflow-data:
