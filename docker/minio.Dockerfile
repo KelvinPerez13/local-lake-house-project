@@ -9,3 +9,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /minio /usr/local/bin/minio
 COPY --from=build /src/LICENSE /licenses/MINIO-LICENSE
 ENTRYPOINT ["minio"]
+

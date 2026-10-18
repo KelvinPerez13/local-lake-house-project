@@ -29,28 +29,16 @@ services:
       timeout: 3s
       retries: 30
   minio:
-  image: openebs/minio:RELEASE.2024-12-18T13-15-44Z
-
-  command: server /data --console-address ":9001"
-
-  environment:
-    MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
-    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
-
-  ports:
-    - "127.0.0.1:9000:9000"
-    - "127.0.0.1:9001:9001"
-
-  volumes:
-    - minio-data:/data
-  storage-init:
-    build:
-      context: .
-      dockerfile: docker/ingestion.Dockerfile
-    environment: *lab-env
-    command: python -m pipelines.init_storage
-    depends_on:
-      minio: {condition: service_healthy}
+    image: openebs/minio:RELEASE.2024-12-18T13-15-44Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-data:/data
   catalog:
     build:
       context: .
