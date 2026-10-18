@@ -39,6 +39,14 @@ services:
       - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
+  storage-init:
+    build:
+      context: .
+      dockerfile: docker/ingestion.Dockerfile
+    environment: *lab-env
+    command: python -m pipelines.init_storage
+    depends_on:
+      minio: {condition: service_healthy}
   catalog:
     build:
       context: .
